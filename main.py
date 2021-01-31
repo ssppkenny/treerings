@@ -1,103 +1,126 @@
-import pandas as pd, re, os
+import os, re
+from itertools import islice
+import pandas as pd
 from collections import namedtuple
 
-Header = namedtuple('Header', ('tree_type', 'site_id', 'site_name', 'investigators', 'elevation', 'latlon1', 'latlon2'))
-
-def read_all_files():
-    directory = "/Users/ugxnbmikhs/code/python/treerings/rwl/"
-    for root, dirs, files in os.walk(directory):
-        #series = []
-        counter = 0
-        for filename in files:
-            if filename.endswith(".rwl"):
-                try:
-                    myseries = read_raw_data(directory + filename)
-                    if not myseries is None:
-                        #series.extend(myseries)
-                        t = ['tree_type', 'site_id', 'site_name', 'investigators', 'elevation', 'latlon1', 'latlon2']
-                        t.extend(list(map(str, range(0,2021))))
-                        df = pd.DataFrame(data=myseries, columns=t)
-                        if counter == 0:
-                            df.to_csv(f"{filename}.csv", columns=t)
-                        else:
-                            df.to_csv(f"{filename}.csv", columns=t, header=False)
-                        counter += 1
-                except Exception as ex:
-                    print("ERROR")
-                    print(filename)
-                    print(ex)
+HeadRecord = namedtuple('HeadRecord', ('filename', 'site_id', 'tree_type', 'elevation', 'lat', 'lon', 'min_year', 'max_year'))
 
 
 
-        #df = pd.DataFrame(data=series)
-        #df.to_csv("out.csv")
+def read_files(directory):
+    headers = dict()
+    files = os.listdir(directory)
+
+    for filename in files:
+        if os.path.isfile(directory + filename) and filename.endswith(".rwl"):
+            with open(directory + filename, encoding="iso-8859-1") as infile:
+                header = islice(infile, 3)
+                headers[filename] = list(header)
+
+    dfs = pd.read_fwf("/Users/ugxnbmikhs/code/treerings/tree-species-code.txt")
+    species = set(dfs["Species"].tolist())
+
+    return headers, species
+
+def process_headers(headers, species):
+    head_records = []
+    for k, v in headers.items():
+        found_species = re.findall(r"\s([A-Z]{4})\s", v[0])
+        if list(filter(lambda x: x in species, found_species)):
+            if not re.match(r"\w+?\s+-*\d+\s+\d+?.*", v[0]) and not re.match(r"\w+?\s+-*\d+\s+\d+?.*", v[1]):
+                tree_type = found_species[-1]
+                if len(v[1].rstrip()) > 0:
+                    if re.match(r".*?\s+.*?\s+([\-]{0,1}[\dmM]+)\s+(\d+).*?(\d+).*?(\d+).*?", v[1]):
+                        res = re.findall(r"([\dmM]+)", v[1].rstrip())
+                        if len(res[-5:]) == 5:
+                            a = res[-5:]
+                            elev_str = re.sub(r'm', '', a[0], flags=re.IGNORECASE)
+                            site_id = v[0][:7].rstrip()
+                            site_id = re.findall(r"([^\s]+)\s*.*", site_id)[0]
+                            try:
+                                hr = HeadRecord(k, site_id, tree_type, int(elev_str) if elev_str else 0, int(a[1]),
+                                                int(a[2]), int(a[3]), int(a[4]))
+                            except:
+                                try:
+
+                                    elev_str = re.sub(r'm', '', a[1], flags=re.IGNORECASE)
+                                    hr = HeadRecord(k, site_id, tree_type, int(elev_str) if elev_str else 0, int(a[2]),
+                                                    int(a[3]), None, None)
+                                except:
+                                    pass
+
+                            head_records.append(hr)
+    return head_records
 
 
 
-
-
-def read_raw_data(filename):
+def read_data(header_record, directory):
+    filename = directory + header_record.filename
     with open(filename, "r", encoding="iso-8859-1") as f:
         lines = f.readlines()
-        m1 = re.match(r"[0-9a-zA-Z]{3}\s+1\s+.*", lines[0])
-        m2 = re.match(r"[0-9a-zA-Z]{3}\s+2\s+.*", lines[1])
-        m3 = re.match(r"[0-9a-zA-Z]{3}\s+3\s+.*", lines[2])
+        data = lines[3:]
+        d = dict()
+        max_year = -float('inf')
+        min_year = float('inf')
+        trees = set()
+        for l in data:
+            entries = list(filter(lambda x: len(x) != 0, re.split(r'\s+', l)))
+            if len(entries) >= 3:
+                try:
+                    tree_name = entries[0]
+                    trees.add(tree_name)
+                    tree_year = int(entries[1])
+                    for i, k in enumerate(entries[2:]):
+                        measurement = int(k)
+                        if not measurement in set([999,-999,9999,-9999, 9990]):
+                            d[(tree_name, tree_year + i)] = int(k)
+                            if tree_year + i > max_year:
+                                max_year = tree_year + i
+                            if tree_year + i < min_year:
+                                min_year = tree_year + i
+                except Exception as e:
+                    print(e)
+                    print(filename, l)
 
-        if m1 and m2 and m3:
-            tree_type = re.findall(r".*\s+([A-Z]{4})\s*", lines[0])[0]
-            site_id = re.findall(r"([0-9a-zA-Z]{3}).+1\s+.*", lines[0])[0]
-            site_name = re.findall(r"[0-9a-zA-Z]{3}-*\s+?1\s+\"*?([^\s]*\s*[^\s]*).*", lines[0])[0]
-            investigators = re.findall(r"[0-9a-zA-Z]{3}.+3\s+(.*)", lines[2])[0]
+        series = []
+        for t in trees:
+            dd = dict()
+            dd["site_id"] = header_record.site_id
+            dd["tree_name"] = f"{header_record.site_id}_{t}"
+            dd["tree_type"] = header_record.tree_type
+            dd["lat"] = header_record.lat
+            dd["lon"] = header_record.lon
+            dd["elevation"] = header_record.elevation
+            for y in range(-100, 2022):
+                if (t, y) in d:
+                    dd[str(y)] = d[(t, y)]
 
-            results = re.findall(r"[0-9a-zA-Z]{3}.+?2.*?(\-*\d+)M*.*?(\d{3,5})[- ]*?(\d{3,5}).*", lines[1])
-            if results:
-                elevation, latlon1, latlon2 = results[0]
-                header = Header(tree_type, site_id, site_name, investigators, elevation, latlon1, latlon2)
-                data = lines[3:]
-                d = dict()
-                max_year = -float('inf')
-                min_year = float('inf')
-                trees = set()
-                for l in data:
-                    entries = list(filter(lambda x: len(x) != 0, re.split(r'\s+', l)))
-                    if len(entries) >= 3:
-                        tree_name = entries[0]
-                        trees.add(tree_name)
-                        tree_year = int(entries[1])
-                        for i, k in enumerate(entries[2:]):
-                            try:
-                                if int(k) != 999 and int(k) != -999:
-                                    d[(tree_name, tree_year + i)] = int(k)
-                                    if tree_year + i > max_year:
-                                        max_year = tree_year + i
-                                    if tree_year + i < min_year:
-                                        min_year = tree_year + i
-                            except:
-                                pass
+            series.append(pd.Series(name=t, data=dd))
+        return series
 
 
-                series = []
-                for t in trees:
-                    dd = dict()
 
-                    for y in range(0, 2022):
-                        if (t, y) in d:
-                            dd[str(y)] = d[(t, y)]
-                    dd["site_id"] = header.site_id
-                    dd["site_name"] = header.site_name
-                    dd["species_code"] = tree_type
-
-                    dd["investigators"] = header.investigators
-                    dd["latlon1"] = header.latlon1
-                    dd["latlon2"] = header.latlon2
-
-                    #df = df.append(pd.Series(name=t, data=dd))
-                    series.append(pd.Series(name=t, data=dd))
-                return series
 
 
 if __name__ == '__main__':
-    read_all_files()
+    directory = "/Users/ugxnbmikhs/code/treerings/rwl/"
+    headers, species = read_files(directory)
+    head_records = process_headers(headers, species)
+    counter = 0
+    for header_record in head_records:
+        myseries = read_data(header_record, directory)
+        t = ['tree_name', 'site_id', 'tree_type', 'elevation', 'lat', 'lon']
+        t.extend(list(map(str, range(1, 2022))))
+        df = pd.DataFrame(data=myseries, columns=t)
+        if counter == 0:
+            df.to_csv(f"{header_record.filename}.csv", columns=t)
+        else:
+            df.to_csv(f"{header_record.filename}.csv", columns=t, header=False)
+        counter += 1
+
+
+
+
 #directory = "/Users/ugxnbmikhs/code/python/treerings/rwl/"
 #read_raw_data(directory + "cana323.rwl")
 
