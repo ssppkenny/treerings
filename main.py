@@ -55,6 +55,7 @@ def process_headers(headers, species):
 
 
 def read_data(header_record, directory):
+    long_names = set()
     filename = directory + header_record.filename
     with open(filename, "r", encoding="iso-8859-1") as f:
         lines = f.readlines()
@@ -68,9 +69,16 @@ def read_data(header_record, directory):
             if len(entries) >= 3:
                 try:
                     tree_name = entries[0]
+                    bi = 2
+                    if len(tree_name) > 8:
+                        tree_name=tree_name[:8]
+                        tree_year = int(entries[0][8:])
+                        bi = 1
+                    else:
+                        tree_year = int(entries[1])
+
                     trees.add(tree_name)
-                    tree_year = int(entries[1])
-                    for i, k in enumerate(entries[2:]):
+                    for i, k in enumerate(entries[bi:]):
                         measurement = int(k)
                         if not measurement in set([999,-999,9999,-9999, 9990]):
                             d[(tree_name, tree_year + i)] = int(k)
@@ -112,11 +120,18 @@ if __name__ == '__main__':
         t = ['tree_name', 'site_id', 'tree_type', 'elevation', 'lat', 'lon']
         t.extend(list(map(str, range(1, 2022))))
         df = pd.DataFrame(data=myseries, columns=t)
+        empty_df = pd.DataFrame(columns=t)
+
+        if not os.path.exists(header_record.tree_type):
+            os.mkdir(header_record.tree_type)
+            empty_df.to_csv(f"{header_record.tree_type}/header.csv", columns=t)
+
         if counter == 0:
-            df.to_csv(f"{header_record.filename}.csv", columns=t)
+            df.to_csv(f"{header_record.tree_type}/{header_record.filename}.csv", columns=t)
         else:
-            df.to_csv(f"{header_record.filename}.csv", columns=t, header=False)
+            df.to_csv(f"{header_record.tree_type}/{header_record.filename}.csv", columns=t, header=False)
         counter += 1
+
 
 
 
